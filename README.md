@@ -1,7 +1,13 @@
 # manager-account-ai — releases
 
+[![version](https://img.shields.io/github/v/release/BaoDoan-AI/manager-account-ai-releases?label=version&color=22c55e)](https://github.com/BaoDoan-AI/manager-account-ai-releases/releases/latest)
+[![platform](https://img.shields.io/badge/platform-Windows-1b2336)](#installing)
+
 Installers for **Claude Account Manager**. Nothing else lives here: no source, no
 issues, no history worth reading.
+
+The badge above reads the latest release of this repository directly, so it is
+never a number someone forgot to bump.
 
 ## Why a separate repository
 
@@ -23,7 +29,8 @@ anonymously, and the source stays private.
 
 ## Installing
 
-Download the `.exe` from [Releases](../../releases) and run it.
+Download the `.exe` from [the latest release](https://github.com/BaoDoan-AI/manager-account-ai-releases/releases/latest)
+and run it.
 
 It is **not code-signed**, so SmartScreen will say the publisher is unknown:
 choose *More info*, then *Run anyway*. It installs for the current user only, so
@@ -32,3 +39,8 @@ Windows never asks for an administrator. Uninstalling leaves your accounts in
 
 From 0.2.0 onward the app checks for new versions itself, at startup and from
 *Settings › Updates*.
+
+## Changes
+
+[CHANGELOG.md](CHANGELOG.md) — written by the release workflow, one section per
+published version.
