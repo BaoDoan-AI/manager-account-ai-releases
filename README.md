@@ -1,4 +1,4 @@
-# manager-account-ai — releases
+# Manager Account AI
 
 [![version](https://img.shields.io/github/v/release/BaoDoan-AI/manager-account-ai-releases?label=version&color=22c55e)](https://github.com/BaoDoan-AI/manager-account-ai-releases/releases/latest)
 [![platform](https://img.shields.io/badge/platform-Windows-1b2336)](#installing)
