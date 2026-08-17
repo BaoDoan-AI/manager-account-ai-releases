@@ -6,6 +6,39 @@ the marker line — do not remove it, and do not reorder what is under it.
 
 <!-- releases -->
 
+## v0.2.2 — 2026-08-17
+
+### Changed
+
+- **T61** — The installer is per-machine. It installs for every user of the
+  machine, into `C:\Program Files (x86)\Manager Account AI`, and Windows asks for
+  an administrator to do it — at install time, and again at every update.
+
+  electron-builder's default for a per-machine 64-bit application is
+  `C:\Program Files`. The `customInit` macro in `build/installer.nsh` rewrites it
+  to the x86 tree, and only while `$INSTDIR` still holds exactly the default
+  `initMultiUser` computed: a path that came from an installation already on the
+  machine, or from the installer's `/D` switch, is a deliberate choice and
+  survives an upgrade untouched. `customInit` rather than `preInit`, which runs
+  before `initMultiUser` and would have to seed `InstallLocation` in HKLM —
+  writing to the registry before the user has agreed to anything, and making a
+  machine that has the old per-user install look like it has both.
+
+  `packElevateHelper: true` is set for a reason its name does not suggest.
+  `elevate.exe` is packed for any value but a literal `false`, so the line reads
+  as redundant — but electron-builder gates the `isAdminRightsRequired: true`
+  field of `latest.yml` on the *raw* option being truthy, and left undefined it
+  writes no field at all. electron-updater would then launch the update installer
+  unelevated. The first build of this change shipped exactly that `latest.yml`;
+  the flag is what puts the field back.
+
+  Two things to know before upgrading. A user without administrator rights can no
+  longer install or update at all — that is the price of all users. And accounts
+  do not become shared: `%APPDATA%\manager-account-ai` is per Windows user, so
+  every user of the machine still keeps their own vault. A machine carrying the
+  old per-user install is not left with two copies; the installer removes the
+  `HKCU` one as part of installing for all users.
+
 ## v0.2.1 — 2026-08-17
 
 ### Added
