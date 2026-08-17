@@ -3,7 +3,7 @@
 [![version](https://img.shields.io/github/v/release/BaoDoan-AI/manager-account-ai-releases?label=version&color=22c55e)](https://github.com/BaoDoan-AI/manager-account-ai-releases/releases/latest)
 [![platform](https://img.shields.io/badge/platform-Windows-1b2336)](#installing)
 
-Installers for **Claude Account Manager**. Nothing else lives here: no source, no
+Installers for **Manager Account AI**. Nothing else lives here: no source, no
 issues, no history worth reading.
 
 The badge above reads the latest release of this repository directly, so it is
@@ -23,7 +23,7 @@ anonymously, and the source stays private.
 
 | File | Role |
 |------|------|
-| `ClaudeAccountManager-Setup-<version>.exe` | the Windows installer |
+| `ManagerAccountAI-Setup-<version>.exe` | the Windows installer |
 | `latest.yml` | version + checksum; how an installed app learns a newer one exists |
 | `<installer>.exe.blockmap` | lets an update download only the changed parts |
 
