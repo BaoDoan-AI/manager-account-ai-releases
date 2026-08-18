@@ -6,6 +6,253 @@ the marker line — do not remove it, and do not reorder what is under it.
 
 <!-- releases -->
 
+## v0.2.4 — 2026-08-18
+
+### Fixed
+
+- **T81** — Opening the Usage tab no longer forces a full sweep every time.
+
+  `usage:start` called `refreshNow()` whenever the poller was already running,
+  and `refreshNow()` deliberately breaks the stagger: it polls every account at
+  once. The page mounts far more often than the interval elapses, so navigating
+  to the tab ten times fired ten simultaneous rounds — which is precisely what
+  makes the usage endpoint answer `HTTP 429` and then report nothing at all.
+  The app was manufacturing the throttling it then displayed.
+
+  It now calls `refreshIfStale()`, which sweeps only when the newest figure is
+  already older than one interval. First open: nothing to show, so it polls.
+  Second open a minute later: the staggered round is already delivering, so it
+  does not. Open again after the interval has elapsed: it polls. Pausing and
+  resuming still sweeps immediately — that is a deliberate human action, and it
+  goes through `start()`, not this path.
+
+  Measured on the running app, not just in the suite: seven visits to the tab
+  produced **one** round of two probes in the log. The same sequence before this
+  change produced two rounds, and would have produced seven had the second bug
+  below not been masking it.
+
+- **T81** — A `refreshNow()` already in flight is now shared rather than
+  duplicated. Two calls that arrived before the first had recorded anything both
+  saw an empty snapshot map and both swept; observed at startup 0.3 s apart,
+  where React's development double-mount reaches it, and reachable in a packaged
+  build by double-clicking the tab.
+
+- **T81** — A backed-off account no longer looks like polling having died.
+
+  After a 429 the account is held for at least a full interval — the curve
+  starts at `2^0 × interval` and the cap is the same 5 minutes as the default.
+  `pollOne` skipped it in silence, recording nothing, so `fetchedAt` froze and
+  the page counted "last result 437s ago" past a 300 s interval with nothing to
+  explain it. With one account every tick was a no-op and the page looked dead.
+
+  `UsageSnapshot` gains `retryAt`: when this app will next try, distinct from
+  `resetsAt`, which is when Anthropic reopens the window. The page reads it and
+  says "1 account backing off, next attempt in 214s".
+
+  `fetchedAt` is deliberately **not** refreshed on a skipped tick. It says how
+  old the figure is, and the figure did not get any newer — fabricating it would
+  reset the counter by lying, which is the same mistake this bank already
+  refuses for reset times.
+
+  A test asserting the opposite was written first and corrected: it demanded the
+  frozen timestamp move, which would have required exactly that lie.
+
+### Changed
+
+- **T84** — The network and background layers talk through the logger. The
+  request server, the usage poller, the Anthropic client, the tray and the
+  updater now reach the same daily file as everything else, so a rate limit or a
+  failed refresh is still readable tomorrow.
+
+  The injected sink stayed exactly as it was: `log?: (message: string) => void`
+  on both `ServerDeps` and `PollerDeps`, which is what the 83 cases in
+  `tests/server.test.ts` and `tests/usage.test.ts` pass. Only the default
+  changed — with no sink injected, which is what the app itself does, a line
+  goes to `log.<level>` under its `[server]` / `[usage]` tag. That is what lets
+  a line carry a level at all without an object ever reaching the logger.
+
+  Levels follow the same policy as the vault: `debug` for the routine — the
+  per-request line and the per-account probe line — and `warn` for anything a
+  user would want to find later: a refused token, a failed refresh, an upstream
+  that did not answer, a rate limit, an interrupted stream, a backoff, a
+  rejected OAuth grant and an account that needs signing in again. The unhandled
+  request path is `error`.
+
+  The server writes one `debug` line per request, from `res.on('finish')` so
+  every route through the handler is covered, including the ones that return
+  early. It carries method, path, status, duration and the account label —
+  nothing else. No headers and no body, because this line is written at the
+  default threshold, and the query string is cut before it is logged.
+
+  Three silent `catch` blocks in `src/main/anthropic.ts` now say something: an
+  identity lookup that failed or answered non-2xx (which is why an account shows
+  as "Account N"), and a usage response that was not JSON.
+
+  `src/main/profiles.ts` had raw control bytes inside a filename-sanitising
+  character class, which made every `rg` and `grep` sweep of `src/main` skip the
+  file as binary — including the token-leak gate, and including the search that
+  would have found the `console.warn` still sitting in it. The class now spells
+  the same range as `\x00-\x1f`, the file is text again, and its one log line
+  goes through `log.warn` under the existing `[profiles]` tag.
+
+- **T83** — The IPC layer talks through the logger, and there is now a way into
+  the log file from the app. All fourteen `console.*` sites in `src/main/ipc.ts`
+  go through `log.*` with their `[ipc]` / `[rotation]` / `[usage]` / `[login]` /
+  `[server]` tag preserved — including the `guard` funnel every synchronous
+  handler routes its failures through, and the three hand-written `catch` blocks
+  that repeat it for the async ones.
+
+  Two token redactions moved onto a line of their own, in `ipc.ts` and in
+  `store.ts`. Both were already correct — the value logged was always
+  `redactToken(...)` — but the leak gate this work is verified with greps for a
+  `log.*` call sharing a line with the name of a token field, and it cannot tell
+  a redacted read from a raw one. A gate with a false positive in it is a gate
+  nobody runs, so the call sites moved rather than the gate.
+
+  `settings:set` now calls `setLogLevel` when the patch carries `logVerbose`, so
+  turning the detail off takes effect on the running process instead of at the
+  next start.
+
+- **T82** — The vault talks through the logger. All twelve `console.*` sites in
+  `src/main/store.ts` now go through `log.*` with their `[vault]` / `[profiles]`
+  tag preserved, so everything they say reaches the log file as well as the
+  console.
+
+  Levels follow the policy the rest of this work uses: a degraded or surprising
+  state is `warn` — `safeStorage` unavailable, an undecryptable account, a
+  profile that could not be written, a poll interval reset off the floor,
+  duplicates merged, an unverified identity on import, `~/.claude.json`
+  disagreeing with the credentials beside it, and every way a switch can fail to
+  stick. A state change is `info`: the vault loading, a rotated token recovered,
+  an account activated.
+
+  Two `catch` blocks stop being silent. The predicate inside `upsertSecret`
+  returned `false` for an account it could not decrypt, so importing quietly
+  created a second copy of an already-present account and said nothing; and the
+  rotated-credential recovery returned on a decrypt failure with a comment
+  claiming `activateAccount` would report it — which is true of the path the
+  user drives, but that recovery also runs at load and behind every poll, where
+  nothing reported anything at all. Both now report through `warnLocked`, the
+  funnel that was already there and already deduplicates by account id, so a
+  locked account still costs exactly one line per session rather than one per
+  poll.
+
+  `loadVault` gained the line that anchors every session: how many accounts came
+  back, and from which file.
+
+### Added
+
+- **T86** — A *Logs* card on the Settings page, between Window and Updates. It
+  holds the two things a user needs from this work without a support call: a
+  **Write detailed logs** checkbox bound to `Settings.logVerbose`, and an **Open
+  log folder** button calling `window.api.openLogFolder()`.
+
+  The checkbox rides the same draft-then-Save flow as the rest of the form, and
+  `settings:set` already calls `setLogLevel` when the patch carries
+  `logVerbose` — so turning the detail off stops `DEBUG` reaching the file on
+  the running process, not at the next start. A failure from the button lands in
+  the form's existing error banner rather than a new one.
+
+  Labels are English to match the page; nothing else on it is translated.
+
+- **T85** — The safety net: a crash in either process now leaves a line behind.
+  `process.on('uncaughtException')` and `('unhandledRejection')` sit at module
+  scope in `src/main/index.ts`, so a throw during startup is caught too. Neither
+  exits — this app sits in the tray holding the server and the poller up, and a
+  stray rejection from one HTTP call is not a reason to take the other machines'
+  proxy down with it.
+
+  `initLogger` is the first thing inside `app.whenReady()`, before `loadVault()`,
+  so a vault that fails to load is itself in the file; the threshold follows
+  `logVerbose` only afterwards, since that setting lives in the vault. One
+  `INFO [app]` line names the version and the platform, which is the anchor a
+  bug report starts from.
+
+  The renderer reaches the same file with no new channel.
+  `webContents.on('console-message')` forwards the window's console under a
+  `[renderer]` tag with its `sourceId:lineNumber`, mapping Chromium's level onto
+  ours; `main.tsx` therefore only has to call `console.error` from its
+  `window.addEventListener('error')` and `('unhandledrejection')` handlers — and
+  that still works when `window.api` is the thing that broke. Three more ways
+  the window can die are covered: `render-process-gone` with its reason and exit
+  code, `preload-error` (which used to leave `window.api` undefined and every
+  button dead with nothing on screen saying why), and `unresponsive`.
+
+  The catch in `src/renderer/src/store.ts` that feeds the error banner now also
+  writes a `[store]` line, so an IPC failure survives the user closing the
+  dialog.
+
+- **T83** — `logs:open`, the channel behind `window.api.openLogFolder()`. The
+  handler creates the directory before handing it to `shell.openPath`: on a
+  machine that has logged nothing yet there is nothing to open, and `openPath`
+  answers a missing path with an error string rather than creating it. The
+  directory itself comes from one exported `logDirectory()` — `initLogger` and
+  the button read the same function, because two of them drifting apart would
+  surface as an empty folder in front of a user trying to file a bug.
+
+- **T83** — `Settings.logVerbose`, defaulting to `true`. On, `debug` lines reach
+  the file; off leaves state changes and failures. No migration needed: `loadVault`
+  spreads `DEFAULT_SETTINGS` under whatever the vault holds, so an existing
+  install picks the default up on its next load.
+
+- **T81** — `src/main/logger.ts`, the one place a main-process line becomes a
+  log line: four levels, a local timestamp carrying its own offset, the existing
+  bracket tag, and two sinks — the console and `<userData>/logs/app-<day>.log`.
+
+  The file sink is the point. A packaged NSIS build has no console, so every one
+  of the 33 `console.*` sites in `src/main` was writing into nothing the moment
+  the app left a dev machine; a user reporting a bug had no artefact to attach.
+
+  One file per local day, so there is no rotation logic to get wrong — rolling
+  over is only a different name. Local rather than UTC because a UTC day
+  boundary cuts "today" at 07:00 for a UTC+7 user, who then attaches the wrong
+  file. Retention is two passes at every day change, not only at startup, since
+  this app lives in the tray for weeks: files past `RETENTION_DAYS` (14) go, and
+  if the directory is still over `MAX_TOTAL_BYTES` (50 MB) the oldest go until it
+  is not. The file being written into is never deleted.
+
+  Two constraints are load-bearing and deliberate. The module must never reach
+  `electron`, directly or transitively: `tests/server.test.ts` and
+  `tests/usage.test.ts` import `src/main/server.ts` and `src/main/usage-poller.ts`
+  without an `vi.mock('electron')`, so the log directory arrives through
+  `initLogger` and lines go to the console alone until it does. And the message
+  parameter is a `string` with no object overload — the shipped threshold is
+  `debug`, so a signature accepting a response or a header map would put writing
+  a live credential to disk one autocomplete away.
+
+  A disk failure inside the logger is swallowed and the console copy goes out
+  first: losing a line beats losing the process.
+
+### Documentation
+
+- **T87** — The memory bank records the logging convention. New
+  `docs/memory-ai/rule/logging.md`: the line format, the four levels and what
+  belongs at each, the twelve bracket tags, the retention passes with their two
+  constants, and the two rules that are load-bearing rather than stylistic —
+  `logger.ts` may never reach `electron`, and the message parameter is a `string`
+  with no object overload.
+
+  Four docs were wrong until this commit, not merely incomplete.
+  `architecture/module-map.md` had no `logger.ts` and no reason for it sitting on
+  the Electron-free side; `interface/ipc-surface.md` was missing `logs:open`
+  entirely, which is a channel the renderer can call; `data/settings-model.md`
+  listed eight settings keys for a `Settings` that now has nine, and its side
+  effect table omitted `setLogLevel`; and `rule/testing-conventions.md` claimed
+  `logger.ts` and `updater.ts` were untested when `tests/logger.test.ts` and
+  `tests/updater.test.ts` both exist.
+
+  Two entries added to `progress.md` under *Known issues*, both real and both
+  consequences of decisions taken deliberately: nothing but the call sites keeps a
+  secret out of the file, since redaction is the caller's job and the only gate is
+  a grep; and every line is an `appendFileSync`, one open and close per line, on
+  whatever path emitted it.
+
+  `active-context.md` names the two checks of this round that are user-facing and
+  have not been watched — a thrown error in DevTools reaching today's file as
+  `ERROR [renderer]`, and the detail switch stopping `DEBUG` without a restart.
+  Written down as open rather than assumed, which is the standard the rest of the
+  bank holds a feature to.
+
 ## v0.2.3 — 2026-08-17
 
 ### Changed
