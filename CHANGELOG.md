@@ -6,6 +6,39 @@ the marker line — do not remove it, and do not reorder what is under it.
 
 <!-- releases -->
 
+## v0.2.5 — 2026-08-20
+
+### Fixed
+
+- **T88** — An account whose token Claude Code rotated no longer gets stuck at
+  "sign in again".
+
+  Claude Code refreshes the active account on its own schedule — roughly every
+  eight hours, whenever the user is working — and rotates **both** halves of the
+  OAuth pair, with nothing on the wire to announce it. The vault kept the pair it
+  had written. So the next poll spent an access token that was already revoked
+  (`HTTP 401`), retried with a refresh token Claude Code had already spent
+  (`HTTP 400 invalid_grant`), and the account stayed broken until it was imported
+  by hand. Nothing the user did caused it and nothing they could do fixed it.
+
+  `captureRotatedToken` — which already existed to save the outgoing account's
+  rotation during a switch — is now exported and called from the poller's
+  `accessTokenFor`, **before** the freshness check rather than after. Harvesting
+  first turns the whole sequence into a no-op: the vault picks up the live pair
+  off disk, the token then reads fresh, and no refresh is attempted at all. It
+  takes `home` directly instead of a prebuilt `ClaudePaths` so both call sites
+  can invoke it cheaply — one small JSON read and one decrypt, returning at the
+  first comparison whenever nothing rotated, which is every account but the
+  active one, and that one too most of the time.
+
+  It stays fail-closed. Credentials on disk that have moved on but whose
+  `accountUuid` does not name the stored account are left alone and logged, not
+  harvested — writing a stranger's token into an account is worse than the 401
+  this fixes.
+
+  Six tests cover the harvest, the no-op path, and every fail-closed branch:
+  wrong identity beside the tokens, missing identity, no active account.
+
 ## v0.2.4 — 2026-08-18
 
 ### Fixed
