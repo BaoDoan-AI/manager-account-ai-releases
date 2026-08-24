@@ -6,6 +6,211 @@ the marker line — do not remove it, and do not reorder what is under it.
 
 <!-- releases -->
 
+## v0.2.7 — 2026-08-24
+
+### Removed
+
+- **T101** — Switch no longer raises a *"Switched to …"* banner.
+
+  The card the user just clicked grows an **Active** badge; the banner said the
+  same thing a second time, lower down the page, and then had to be dismissed —
+  outliving the action it described. Gone with it: `switchedTo` and
+  `dismissSwitchNotice` from the store, which existed for nothing else, and the
+  `get` parameter of the store factory, which only that code used.
+
+  What goes with it, stated rather than glossed: that banner was the only place
+  the Accounts page said *"restart Claude Code to pick it up — a session already
+  running keeps the previous token"*. The tray notification for an automatic
+  rotation still says it; a manual switch now says nothing. Nothing is added back
+  in its place unless it turns out to be missed.
+
+  Verified as a removal should be — on the built bundle rather than by driving the
+  UI: `Switched to`, `switchedTo`, `dismissSwitchNotice` and
+  `Restart Claude Code to pick it up` are all absent from
+  `out/renderer/assets/*.js`, while `Login again` is still there to prove the
+  bundle read was the new one.
+
+### Changed
+
+- **T100** — The token chain the poller runs is now testable, and tested.
+
+  `harvest → freshness → refresh → persist → mirror`. Three separate
+  "sign in again" bugs this round came out of that sequence — T90 read the
+  harvest's direction backwards, T91 found the mirror missing, T99 found a third
+  route into it — and it was the one part of the whole path with no test, for a
+  structural reason: `accessTokenFor` sat inline in `ipc.ts`, which imports
+  `electron` and therefore cannot be loaded under vitest. The bank had it down as
+  "reasoned, never watched", and closing it was going to mean leaving a machine
+  idle for eight hours and hoping to read the right log line.
+
+  So the sequence moved to `src/main/token-access.ts`, which imports no
+  `electron` and reaches the vault through three injected functions —
+  `captureRotatedToken`, `getAccount`, `updateAccountOauth`. `ipc.ts` supplies
+  them and keeps the real `~/.claude`; the test supplies them bound to a temp
+  home. This is the same testability boundary the architecture already draws for
+  `oauth.ts`, `server.ts` and `usage-poller.ts`.
+
+  Seven cases, and only the network is a stand-in — the vault is the real
+  `store.ts`, `~/.claude` is a real directory, and the assertions are on the bytes
+  Claude Code would read at its next start:
+
+  - a stale token is refreshed and the rotated pair reaches **both** readers, the
+    vault and the file (disable the mirror and this one fails, which is what makes
+    it a test of the link rather than of the fixture);
+  - a fresh token spends no request at all;
+  - a pair Claude Code rotated is harvested instead of refreshing, so the token it
+    already spent is never sent to be rejected;
+  - a refresh token the stored date says has expired is refused without a request;
+  - a rejected grant surfaces as terminal and leaves **neither** reader holding
+    half a rotation;
+  - a non-active account's refresh does not touch `~/.claude`;
+  - two concurrent callers make **one** request, because a refresh token is
+    single-use and the second would spend what the first rotated away.
+
+### Fixed
+
+- **T99** — A re-login of the **active** account now reaches
+  `~/.claude/.credentials.json` too.
+
+  T91 mirrored a *refresh* to that file. A **login** never went through the same
+  door: `upsertSecret` writes the vault and the launcher profile, and only
+  `updateAccountOauth` mirrors. So *Login again* on the account currently written
+  into `~/.claude` moved the vault ahead of the file and left it there.
+
+  Confirmed from a real machine rather than reasoned, once the auto-continue from
+  T98 made the button usable end to end:
+
+  | | mtime | Holds |
+  |---|-------|-------|
+  | `vault.json` | 17:45:07 | the pair the login just produced |
+  | `~/.claude/.credentials.json` | 13:28:29 | `token …1gAA`, `expiresAt 14:28:04` — **expired three hours earlier** |
+
+  That `…1gAA` is exactly what the log recorded at `13:28:29 activated
+  embteam05 (token …1gAA)`. Claude Code was holding a dead access token and a
+  refresh token from the superseded grant, while a live pair sat in the vault
+  unused — the same shape as T90 and T91, arriving by a third route.
+
+  The mirror moves into `upsertSecret`, behind the same identity guard, so
+  signing in as somebody else still writes nothing to a file that names another
+  account. A brand-new entry deliberately gets no mirror: the only caller that
+  makes one active is `importCurrentAccount`, whose pair was read off that very
+  file a moment earlier.
+
+- **T98** — The auto-continue from **T97** now actually runs. It never did.
+
+  Caught the only way it could be: the address was filled in but the page waited
+  for a click, and **none of that feature's three log lines were in the file** —
+  not the success, not the "could not press", not the failure. Three exhaustive
+  branches and no line from any of them says the code never executed, which is a
+  sharper diagnosis than any of them individually. The line existed for a
+  renamed button; it caught a hook that never fired.
+
+  T97 assumed the authorize URL redirects to the login page, and tested for
+  `/login` in the URL at `did-finish-load`. It does not. Measured:
+
+  | t | Event | URL |
+  |---|-------|-----|
+  | 231 ms | `did-redirect-navigation` | → `claude.ai/oauth/authorize` (cross-origin 302) |
+  | 733 ms | `did-finish-load` | `claude.ai/oauth/authorize` — nothing to press yet |
+  | 1072 ms | `did-navigate-in-page` | → `claude.ai/login?email=…` |
+
+  The step to `/login` is same-origin, so claude.ai takes it with `pushState`:
+  one document, and **no second `did-finish-load`**. The URL test therefore
+  rejected the single event it ever saw.
+
+  The fix removes the test rather than repairing it. The script polls the DOM
+  already, its JS context survives an in-page navigation, and its own condition —
+  a filled address field plus a button matching `/continue with email/i` — is
+  strictly more precise than a substring of a URL. So: one injection at the only
+  document load, no URL condition, and twenty seconds instead of ten to cover
+  that route change on a slow network. Verified against the live page — injected
+  at `/oauth/authorize`, resolved 466 ms later on `/login` with the button found
+  and enabled.
+
+### Added
+
+- **T97** — *Login again* fills the address in and submits it, so the window opens
+  on the code.
+
+  Two halves, and only the first is a supported parameter. The authorize URL now
+  carries `login_hint=<the account's email>` for a re-login. Anthropic honours it:
+  the endpoint answers with a redirect to
+  `claude.ai/login?email=<hint>&selectAccount=true`, and that page renders with
+  `input[type=email]` already holding the value. Measured against the live
+  endpoint, not taken from the OIDC spec — the same probe read the four buttons
+  back (`Continue with email`, `SSO`, `Google`, `Apple`).
+
+  That still left a click before the code field, so the second half presses it:
+  a small script injected into the login window polls for up to ten seconds and
+  clicks *Continue with email*. **The filled field is the guard**, and it guards
+  two things — it proves the hint actually landed, so a page that ignored it is
+  never clicked blindly, and it is gone at the code step, which is what stops a
+  second injection pressing anything twice. Verified read-only against the live
+  page: the predicate matched on its first tick, the button found by text and not
+  disabled. The click itself was not fired, because doing so would have sent a
+  real login attempt for a made-up address.
+
+  What it costs, stated rather than buried:
+
+  - It depends on Anthropic's DOM. A renamed button means no click — and the
+    fallback is the page exactly as it was before this existed, plus a log line
+    saying `could not press "Continue with email"`. That line is the whole point:
+    a silent no-op would be a bug nobody could diagnose.
+  - It submits the address, so the code email is sent the moment the window
+    opens. For an account that signs in with Google or Apple that is the wrong
+    path, and the dialog says the token follows whoever signs in, not the button
+    pressed.
+  - An account imported without an identity has no address stored. It gets no
+    hint, no click, and the dialog says to type it as usual.
+
+  Adding an account is untouched: no hint, no injection, the same flow it always
+  had. The paste-a-code route carries the hint too — it fills the field wherever
+  that URL is opened, including a browser this app did not pick, where nothing of
+  ours can press anything.
+
+### Changed
+
+- **T96** — CI tests code and builds nothing. This supersedes **T95** one commit
+  later: shortening the retention treated the symptom, and the line it changed is
+  gone with the job.
+
+  The division is now the one the two workflows were always named for. `ci.yml`
+  runs typecheck and tests on every push — about twenty seconds, no Windows
+  runner, no binary, nothing to store. `release.yml`, triggered by a tag, is the
+  only thing that builds the app and the only thing that keeps the result, as a
+  release asset people can actually install.
+
+  The `package` job it replaces did `npm run dist` on every push to `release/*`
+  and uploaded the 94 MB installer as an artifact. A week of work made 39 of
+  them, 3.6 GB, and then `upload-artifact` began answering
+  `Artifact storage quota has been hit`. That failed the step, the step failed the
+  job, and a red CI is what stops `release.mjs` pushing a tag — so v0.2.6 could
+  not be released because a throwaway copy of its output had nowhere to go, on a
+  build whose typecheck, tests and `npm run dist` had every one of them passed.
+  All 39 artifacts were deleted; both repositories now hold none.
+
+  What that job did catch is worth naming rather than glossing: a broken
+  packaging config, before a tag existed. It is now caught by `release.yml`
+  instead, **after** the tag — and since a tag on origin is never moved, that
+  costs a version number and a re-cut. Nothing broken reaches a user either way,
+  because `release.yml` runs `npm run dist` before it publishes anything, so the
+  failure mode is "no release", never "a bad installer".
+
+- **T95** — CI keeps a built installer for three days instead of fourteen.
+
+  Found by it breaking a release rather than by reading the config. The `package`
+  job uploads a 94 MB installer on every push to `release/*`, and a fortnight of
+  those is what a week of work produces: 39 artifacts, 3.6 GB, then
+  `Failed to CreateArtifact: Artifact storage quota has been hit`. That failed the
+  upload, which failed CI, which — correctly — refused to let `npm run release`
+  push a tag for a build whose typecheck, tests and `npm run dist` had all passed.
+
+  Three days is still long enough to download a build somebody just pushed, and
+  nothing durable was ever in that bucket: every released installer is a release
+  asset in this repository and in the public artifact repository, `latest.yml`
+  included. The 35 artifacts already sitting there were deleted, which is what
+  unblocked v0.2.6.
+
 ## v0.2.6 — 2026-08-24
 
 ### Changed
