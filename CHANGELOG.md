@@ -6,6 +6,139 @@ the marker line — do not remove it, and do not reorder what is under it.
 
 <!-- releases -->
 
+## v0.2.6 — 2026-08-24
+
+### Changed
+
+- **T94** — `.eaaw/` is ignored.
+
+  Local state of a tool that runs beside the repository rather than in it:
+  `env.json` is per-machine, `lang.json` and `cloud-workers-approved` are one
+  developer's choices, and `logs/app.log` is output. Nothing in `src/` or
+  `scripts/` reads any of it.
+
+  Ignored for the same reason `.claude/gitconfig.yml` is, plus one that is not
+  theoretical: `scripts/release.mjs` refuses to start on a dirty tree, and
+  `git status --porcelain` counts an untracked directory. An untracked folder
+  nobody meant to commit was blocking a release.
+
+### Documentation
+
+- **T93** — The memory bank records the two-sided token story, and closes a
+  question it had carried open for three rounds.
+
+  New doc `behavior/token-survival.md`: why two programs hold the same OAuth pair,
+  the three guards that stop either overwriting the other, which call sites
+  harvest and when, and what is left when the grant really is dead. The topic had
+  outgrown `account-switching.md`, which now points at it instead of describing a
+  switch-time-only rescue that stopped being switch-time-only at T88.
+
+  `active-context.md`'s open question — "lost to a switch, or to the 30-day
+  expiry?" — is answered rather than deleted: neither, and the log named it. Two
+  new active decisions come out of the round: a guard belongs where every caller
+  passes rather than on the path the report names, and fail-closed applies in
+  whichever direction the write is going.
+
+### Added
+
+- **T92** — Every account card carries a **Login again** button.
+
+  A grant that is genuinely dead — revoked, or past its 30-day absolute expiry —
+  has always needed a fresh login, and the only route to one was *Add account*,
+  which reads as adding a second copy of an account you already have. It never
+  was: `upsertSecret` matches a login to an entry by account uuid, so signing the
+  same account in again lands on that entry. The button says so out loud instead
+  of leaving the user to discover it.
+
+  It is on every card, not only the failing ones. Whether a grant is dead is
+  something the app learns from a poll, and hiding the button until then hides it
+  exactly when it is wanted.
+
+  The dialog it opens is the existing one, told which account it is repairing: it
+  names the account in its heading and its button, and says plainly that the token
+  follows the account signed in as — sign in as somebody else and their entry is
+  the one updated, because the identity in the token decides, not the button
+  pressed.
+
+  One thing had to change for a re-login to work at all: the dialog closed itself
+  by watching the account count, which never moves when a login repairs an entry
+  that already exists. It now closes on a store counter the login actions bump —
+  both routes, the sign-in window and the pasted code.
+
+### Fixed
+
+- **T91** — A token the app refreshes for the active account now reaches
+  `~/.claude/.credentials.json`, not just the vault.
+
+  Two programs read that pair: this app polls with the vault's copy, Claude Code
+  starts with the file's. Only the vault was being written, so after any refresh
+  of ours the file held a refresh token the app had already spent. Claude Code
+  then failed its own refresh the next time the user worked, and what it left
+  behind was the token-less blob T89 now rejects. From the user's side that is a
+  logout out of nowhere, fixed only by pressing *Switch* again — the "sign in
+  again" they actually see, and the half no guard in the vault could reach.
+
+  `updateAccountOauth` mirrors the pair to disk when the account is the active
+  one. Every refresh in the app arrives there — the poller's and the server's
+  alike — so neither call site had to change.
+
+  Fail-closed on the same proof `captureRotatedToken` demands: the write happens
+  only while `~/.claude.json` still names this account by uuid. If the user has
+  logged in elsewhere behind the app, the file belongs to that account and writing
+  this pair over it would destroy *its* only way to refresh — the same loss, in
+  the other direction. It also never throws: a locked file, or one caught
+  mid-write, is logged and does not turn a successful refresh into a failed poll.
+  A file whose blob is already this pair is skipped, which is what makes the
+  rescue's own write a no-op instead of churn.
+
+- **T90** — The rotated-token rescue no longer reverts an account to a token the
+  app itself already spent.
+
+  T88 put `captureRotatedToken` on the path of every poll, and with it a bug that
+  had been harmless while it only ran at switch time. Its test for "Claude Code
+  rotated our token" is that the refresh token on disk differs from the stored
+  one — but that is equally true in the *opposite* direction. The poller and the
+  server both refresh, both write the new pair into the vault, and nothing wrote
+  it into `~/.claude/.credentials.json`, so the two sides legitimately disagree
+  with the vault ahead. The rescue read that backwards and copied the file's
+  spent pair over the live one, which no retry can undo.
+
+  Three times in the logs, always the same three lines:
+
+  ```
+  16:42:52 INFO  [usage] refreshed embteam05 -> …AgAA
+  16:45:23 INFO  [vault] recovered a rotated token for embteam05 (…dwAA)
+  16:47:53 WARN  [usage] needs signing in again — HTTP 400 invalid_grant
+  ```
+
+  Again on 08-23 at 14:16 → 14:18, and on 08-24 at 13:23 → 13:25. Nothing the
+  user did caused it; the account simply died about three minutes after a
+  successful refresh.
+
+  `expiresAt` settles the direction. A real rotation always carries a later one,
+  so the file is harvested only when it is *strictly* newer, and anything else —
+  our own refresh, an equal expiry, a missing one — is left alone and logged. That
+  answers a question the memory bank had carried open for three rounds: the
+  account that lost its grant lost it neither to a switch nor to the 30-day
+  absolute expiry.
+
+- **T89** — A `.credentials.json` carrying no tokens is no longer read as a login.
+
+  `readCredentials` returned `claudeAiOauth` verbatim, so a blob that is present
+  but token-less counted as a credential. That is not a hypothetical shape: it is
+  what Claude Code leaves behind when its own refresh fails, and
+  `logs/app-2026-08-24.log` caught the consequence at 13:25:45 —
+  `recovered a rotated token for … ((none))`, the rescue harvesting an empty pair
+  into the vault, followed one second later by
+  `needs signing in again — Token refresh failed with HTTP 400` with no OAuth
+  error body at all, because the request carried no refresh token to reject.
+
+  The check is at the read rather than at the three call sites, all of which treat
+  a returned object as usable: the rescue now sees "not logged in" and leaves the
+  vault alone, `importCurrentAccount` refuses to import a token-less account
+  instead of storing one, and `verifyApplied` correctly reports credentials that
+  vanished.
+
 ## v0.2.5 — 2026-08-20
 
 ### Fixed
